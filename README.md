@@ -16,10 +16,9 @@ usage
 usage: panahone [-h] [-l LOCATION] [-f]
 
 options:
-  -h, --help            show this help message and exit
-  -l, --location LOCATION
-                        location for weather
-  -f, --fahrenheit      use Fahrenheit instead of Celsius
+  -h, --help                show this help message and exit
+  -l, --location LOCATION   location for weather
+  -f, --fahrenheit          use Fahrenheit instead of Celsius
 
 ```
 
