@@ -22,13 +22,11 @@ from gi.repository import Gtk, Notify
 
 class PanahoneApplet:
     def __init__(self, location, use_fahrenheit):
-        icon_file = "./panahone.png"
-
         self.location = location or ""
         self.use_fahrenheit = use_fahrenheit
         Notify.init("Panahone")
         self.icon = Gtk.StatusIcon()
-        self.icon.set_from_file(icon_file)
+        self.icon.set_from_icon_name('weather-overcast')
         self.icon.set_tooltip_text("Panahone: click to get weather")
         self.icon.connect("button-press-event", self.on_click)
         signal.signal(signal.SIGINT, self.quit)
@@ -38,7 +36,7 @@ class PanahoneApplet:
             Notify.Notification.new(
                 "Panahone",
                 "Retrieving Weather Data…",
-                "weather"
+                "weather-overcast"
             ).show()
             self.fetch_and_notify()
         elif event.button == 2:
@@ -69,7 +67,7 @@ class PanahoneApplet:
         Notify.Notification.new(
             "Panahone",
             message,
-            "weather"
+            "weather-overcast"
         ).show()
 
     def quit(self, *args):
