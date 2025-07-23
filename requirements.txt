@@ -1,0 +1,5 @@
+gi
+sys
+argparse
+requests
+threading

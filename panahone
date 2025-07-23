@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+
+import argparse
+import gi
+import requests
+import signal
+import warnings
+# import sys
+# import json
+
+# will fix this when it breaks :D
+warnings.filterwarnings(
+    "ignore",
+    category=DeprecationWarning,
+    message="Gtk.StatusIcon.*",
+)
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Notify", "0.7")
+from gi.repository import Gtk, Notify
+
+
+class PanahoneApplet:
+    def __init__(self, location, out_format, temp_unit):
+        icon_file = "./panahone.png"
+
+        self.location = location or ""
+        self.out_format = out_format or "{weather} {temp}{unit}"
+        self.temp_unit = temp_unit.upper()
+        Notify.init("Panahone")
+        self.icon = Gtk.StatusIcon()
+        self.icon.set_from_file(icon_file)
+        self.icon.set_tooltip_text("Panahone: click to get weather")
+        self.icon.connect("button-press-event", self.on_click)
+        signal.signal(signal.SIGINT, self.quit)
+
+    def on_click(self, icon, event):
+        if event.button == 1:
+            Notify.Notification.new(
+                "Panahone",
+                "Retrieving Weather Data…",
+                "weather"
+            ).show()
+            self.fetch_and_notify()
+        elif event.button == 2:
+            self.quit()
+
+    def fetch_and_notify(self):
+        url = f"https://wttr.in/{self.location}?format=j1"
+        try:
+            r = requests.get(url, timeout=10)
+            data = r.json()
+            current = data["current_condition"][0]
+            temp_c = current["temp_C"]
+            temp_f = current["temp_F"]
+            unit = "°C" if self.temp_unit == "C" else "°F"
+            temp = temp_c if self.temp_unit == "C" else temp_f
+            weather = current["weatherDesc"][0]["value"]
+            message = self.out_format.format(
+                weather=weather, temp=temp, unit=unit)
+        except Exception as e:
+            message = f"Error fetching weather: {e}"
+
+        Notify.Notification.new(
+            "Panahone",
+            message,
+            "weather"
+        ).show()
+
+    def quit(self, *args):
+        Gtk.main_quit()
+
+    def run(self):
+        Gtk.main()
+
+
+def parse_args():
+    p = argparse.ArgumentParser(prog="panahone")
+    p.add_argument("-l", "--location", help="location for weather")
+    p.add_argument("-f", "--format", dest="out_format",
+                   help="output format for weather (based on wttr.in API)")
+    p.add_argument("-t", "--temp-unit", dest="temp_unit",
+                   choices=["C", "F"], default="C",
+                   help="temperature unit")
+    return p.parse_args()
+
+
+def main():
+    args = parse_args()
+    app = PanahoneApplet(args.location, args.out_format, args.temp_unit)
+    try:
+        app.run()
+    except KeyboardInterrupt:
+        app.quit()
+
+
+if __name__ == "__main__":
+    main()
