@@ -1,1 +1,15 @@
+__pycache__/
+*.py[cod]
+*.swp
+*.log
+env/
+venv/
 .venv/
+.vscode/
+*.vscode/
+.idea/
+*.idea/
+*.vscode/
+*.atom/
+.DS_Store  # macOS
+Thumbs.db  # Windows
