@@ -7,7 +7,8 @@ panahone ⛅
 
 simple gtk3 systray weather applet using wttr.in's API written in Python.
 
-(i really just wanted to practice using the `requests` and `json` modules in python so i made this).
+(i really just wanted to practice using the `requests` and `json` modules in
+python so i made this).
 
 usage
 -------------
