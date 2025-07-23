@@ -21,12 +21,11 @@ from gi.repository import Gtk, Notify
 
 
 class PanahoneApplet:
-    def __init__(self, location, out_format, temp_unit):
+    def __init__(self, location, use_fahrenheit):
         icon_file = "./panahone.png"
 
         self.location = location or ""
-        self.out_format = out_format or "{weather} {temp}{unit}"
-        self.temp_unit = temp_unit.upper()
+        self.use_fahrenheit = use_fahrenheit
         Notify.init("Panahone")
         self.icon = Gtk.StatusIcon()
         self.icon.set_from_file(icon_file)
@@ -46,20 +45,26 @@ class PanahoneApplet:
             self.quit()
 
     def fetch_and_notify(self):
-        url = f"https://wttr.in/{self.location}?format=j1"
+        if not self.location:
+            url = "https://wttr.in/?format=j1"
+        else:
+            url = f"https://wttr.in/{self.location}?format=j1"
         try:
             r = requests.get(url, timeout=10)
             data = r.json()
             current = data["current_condition"][0]
+            location = data["nearest_area"][0]["areaName"][0]["value"]
             temp_c = current["temp_C"]
             temp_f = current["temp_F"]
-            unit = "°C" if self.temp_unit == "C" else "°F"
-            temp = temp_c if self.temp_unit == "C" else temp_f
+            unit = "°F" if self.use_fahrenheit else "°C"
+            temp = temp_f if self.use_fahrenheit else temp_c
             weather = current["weatherDesc"][0]["value"]
-            message = self.out_format.format(
-                weather=weather, temp=temp, unit=unit)
+            message = f"Weather in {location}: {weather}, Temp: {temp}{unit}"
         except Exception as e:
-            message = f"Error fetching weather: {e}"
+            if not self.location:
+                message = f"Error fetching weather: {e}"
+            else:
+                message = f"Error fetching weather for {self.location}: {e}"
 
         Notify.Notification.new(
             "Panahone",
@@ -77,17 +82,14 @@ class PanahoneApplet:
 def parse_args():
     p = argparse.ArgumentParser(prog="panahone")
     p.add_argument("-l", "--location", help="location for weather")
-    p.add_argument("-f", "--format", dest="out_format",
-                   help="output format for weather (based on wttr.in API)")
-    p.add_argument("-t", "--temp-unit", dest="temp_unit",
-                   choices=["C", "F"], default="C",
-                   help="temperature unit")
+    p.add_argument("-f", "--fahrenheit", action="store_true",
+                   help="use Fahrenheit instead of Celsius")
     return p.parse_args()
 
 
 def main():
     args = parse_args()
-    app = PanahoneApplet(args.location, args.out_format, args.temp_unit)
+    app = PanahoneApplet(args.location, args.fahrenheit)
     try:
         app.run()
     except KeyboardInterrupt:
