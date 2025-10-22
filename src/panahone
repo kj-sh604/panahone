@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 
 import argparse
+import json
+import logging
+import os
+import signal
+import sys
+import warnings
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Optional, Dict, Any
+
 import gi
 import requests
-import signal
-import warnings
-# import sys
-# import json
 
-# will fix this when it breaks :D
+# suppress gtk statusicon FOR NOW
 warnings.filterwarnings(
     "ignore",
     category=DeprecationWarning,
@@ -17,81 +23,458 @@ warnings.filterwarnings(
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("Notify", "0.7")
-from gi.repository import Gtk, Notify
+from gi.repository import Gtk, GLib, Notify
+
+APP_NAME = "Panahone"
+APP_VERSION = "2025.10.22"
+CACHE_DIR = Path.home() / ".cache" / "panahone"
+CONFIG_DIR = Path.home() / ".config" / "panahone"
+CACHE_FILE = CACHE_DIR / "weather_cache.json"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+LOG_FILE = CACHE_DIR / "panahone.log"
+CACHE_DURATION = timedelta(minutes=10)  # cache weather data for 10 minutes
+AUTO_REFRESH_INTERVAL = 30 * 60 * 1000  # 30 minutes
+
+# weather icon mapping
+WEATHER_ICONS = {
+    "clear": "weather-clear",
+    "sunny": "weather-clear",
+    "partly cloudy": "weather-few-clouds",
+    "cloudy": "weather-overcast",
+    "overcast": "weather-overcast",
+    "mist": "weather-fog",
+    "fog": "weather-fog",
+    "patchy rain": "weather-showers-scattered",
+    "light rain": "weather-showers",
+    "rain": "weather-showers",
+    "heavy rain": "weather-storm",
+    "thunderstorm": "weather-storm",
+    "thunder": "weather-storm",
+    "snow": "weather-snow",
+    "sleet": "weather-snow",
+    "blizzard": "weather-snow",
+}
+
+# logging if desired
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler(sys.stdout)],
+)
+logger = logging.getLogger(APP_NAME)
+
+
+class WeatherCache:
+    """Manages caching of weather data to reduce API calls"""
+
+    def __init__(self, cache_file: Path):
+        self.cache_file = cache_file
+        self.cache_file.parent.mkdir(parents=True, exist_ok=True)
+
+    def get(self, location: str) -> Optional[Dict[str, Any]]:
+        """Retrieve cached weather data if still valid"""
+        if not self.cache_file.exists():
+            return None
+
+        try:
+            with open(self.cache_file, "r") as f:
+                cache = json.load(f)
+
+            if cache.get("location") != location:
+                return None
+
+            cached_time = datetime.fromisoformat(cache.get("timestamp", ""))
+            if datetime.now() - cached_time > CACHE_DURATION:
+                return None
+
+            logger.info(f"Using cached weather data for {location}")
+            return cache.get("data")
+        except (json.JSONDecodeError, ValueError, KeyError) as e:
+            logger.warning(f"Cache read error: {e}")
+            return None
+
+    def set(self, location: str, data: Dict[str, Any]):
+        """Save weather data to cache"""
+        try:
+            cache = {
+                "location": location,
+                "timestamp": datetime.now().isoformat(),
+                "data": data,
+            }
+            with open(self.cache_file, "w") as f:
+                json.dump(cache, f, indent=2)
+            logger.info(f"Cached weather data for {location}")
+        except Exception as e:
+            logger.error(f"Cache write error: {e}")
+
+
+class ConfigManager:
+    """Manages application configuration"""
+
+    DEFAULT_CONFIG = {
+        "location": "",
+        "use_fahrenheit": False,
+        "auto_refresh": True,
+        "refresh_interval_minutes": 30,
+        "show_wind": True,
+        "show_humidity": True,
+        "show_feels_like": True,
+        "notification_timeout": 10000,  # milliseconds
+    }
+
+    def __init__(self, config_file: Path):
+        self.config_file = config_file
+        self.config_file.parent.mkdir(parents=True, exist_ok=True)
+        self.config = self.load()
+
+    def load(self) -> Dict[str, Any]:
+        """Load configuration from file"""
+        if not self.config_file.exists():
+            self.save(self.DEFAULT_CONFIG)
+            return self.DEFAULT_CONFIG.copy()
+
+        try:
+            with open(self.config_file, "r") as f:
+                config = json.load(f)
+            # ensure all keys exist
+            merged = self.DEFAULT_CONFIG.copy()
+            merged.update(config)
+            return merged
+        except Exception as e:
+            logger.error(f"Config load error: {e}")
+            return self.DEFAULT_CONFIG.copy()
+
+    def save(self, config: Dict[str, Any]):
+        """Save configuration to file"""
+        try:
+            with open(self.config_file, "w") as f:
+                json.dump(config, f, indent=2)
+            logger.info("Configuration saved")
+        except Exception as e:
+            logger.error(f"Config save error: {e}")
+
+    def get(self, key: str, default=None):
+        """Get configuration value"""
+        return self.config.get(key, default)
+
+    def set(self, key: str, value: Any):
+        """Set configuration value"""
+        self.config[key] = value
+        self.save(self.config)
 
 
 class PanahoneApplet:
-    def __init__(self, location, use_fahrenheit):
-        self.location = location or ""
-        self.use_fahrenheit = use_fahrenheit
-        Notify.init("Panahone")
+    """Main application class for the weather applet"""
+
+    def __init__(
+        self, location: Optional[str] = None, use_fahrenheit: Optional[bool] = None
+    ):
+        self.config = ConfigManager(CONFIG_FILE)
+        self.cache = WeatherCache(CACHE_FILE)
+
+        # args override config
+        self.location = (
+            location if location is not None else self.config.get("location", "")
+        )
+        self.use_fahrenheit = (
+            use_fahrenheit
+            if use_fahrenheit is not None
+            else self.config.get("use_fahrenheit", False)
+        )
+
+        Notify.init(APP_NAME)
+
+        # create systray icon
         self.icon = Gtk.StatusIcon()
-        self.icon.set_from_icon_name('weather-overcast')
-        self.icon.set_tooltip_text("Panahone: click to get weather")
+        self.icon.set_from_icon_name("weather-overcast")
+        self.icon.set_tooltip_text(f"{APP_NAME}: Click to get weather")
         self.icon.connect("button-press-event", self.on_click)
+
+        # refresh timer
+        self.auto_refresh_timer = None
+        if self.config.get("auto_refresh", True):
+            self.start_auto_refresh()
+
+        # sigint handling
         signal.signal(signal.SIGINT, self.quit)
 
-    def on_click(self, icon, event):
-        if event.button == 1:
-            Notify.Notification.new(
-                "Panahone",
-                "Retrieving Weather Data…",
-                "weather-overcast"
-            ).show()
-            self.fetch_and_notify()
-        elif event.button == 2:
-            self.quit()
+        logger.info(f"{APP_NAME} v{APP_VERSION} started")
 
-    def fetch_and_notify(self):
+    def start_auto_refresh(self):
+        """Start automatic weather refresh timer"""
+        interval = self.config.get("refresh_interval_minutes", 30) * 60 * 1000
+        self.auto_refresh_timer = GLib.timeout_add(interval, self.auto_refresh_callback)
+        logger.info(f"Auto-refresh enabled (every {interval // 60000} minutes)")
+
+    def auto_refresh_callback(self):
+        """Callback for auto-refresh timer"""
+        logger.info("Auto-refreshing weather data")
+        self.fetch_and_notify(silent=True)
+        return True  # Continue timer
+
+    def on_click(self, icon, event):
+        """Handle mouse clicks on the system tray icon"""
+        if event.button == 1:  # left
+            self.show_notification(
+                "Retrieving Weather Data…", "weather-overcast", timeout=2000
+            )
+            self.fetch_and_notify()
+        elif event.button == 2:  # middle
+            self.quit()
+        elif event.button == 3:  # right
+            self.show_menu(event)
+
+    def show_menu(self, event):
+        """Show context menu on right-click"""
+        menu = Gtk.Menu()
+
+        # refresh
+        refresh_item = Gtk.MenuItem(label="Refresh Weather")
+        refresh_item.connect("activate", lambda w: self.fetch_and_notify())
+        menu.append(refresh_item)
+        menu.append(Gtk.SeparatorMenuItem())
+
+        # f/c toggle
+        temp_unit = "Celsius" if self.use_fahrenheit else "Fahrenheit"
+        toggle_item = Gtk.MenuItem(label=f"Switch to {temp_unit}")
+        toggle_item.connect("activate", self.toggle_temperature_unit)
+        menu.append(toggle_item)
+        menu.append(Gtk.SeparatorMenuItem())
+
+        # about
+        about_item = Gtk.MenuItem(label="About")
+        about_item.connect("activate", self.show_about)
+        menu.append(about_item)
+        quit_item = Gtk.MenuItem(label="Quit")
+        quit_item.connect("activate", self.quit)
+        menu.append(quit_item)
+
+        menu.show_all()
+        menu.popup(None, None, None, None, event.button, event.time)
+
+    def toggle_temperature_unit(self, widget):
+        """Toggle between Fahrenheit and Celsius"""
+        self.use_fahrenheit = not self.use_fahrenheit
+        self.config.set("use_fahrenheit", self.use_fahrenheit)
+        unit = "Fahrenheit" if self.use_fahrenheit else "Celsius"
+        self.show_notification(
+            f"Temperature unit changed to {unit}", "weather-overcast"
+        )
+        logger.info(f"Temperature unit changed to {unit}")
+
+    def show_about(self, widget):
+        """Show about dialog"""
+        message = (
+            f"{APP_NAME} v{APP_VERSION}\n"
+            f"A GTK3 weather applet using wttr.in API\n\n"
+            f"Features:\n"
+            f"• Real-time weather updates\n"
+            f"• Automatic caching\n"
+            f"• Auto-refresh support\n"
+            f"• Customizable display\n\n"
+            f"Left click: Fetch weather\n"
+            f"Middle click: Quit\n"
+            f"Right click: Menu"
+        )
+        self.show_notification(message, "weather-overcast", timeout=15000)
+
+    def get_weather_icon(self, weather_desc: str) -> str:
+        """Map weather description to system icon"""
+        weather_lower = weather_desc.lower()
+        for keyword, icon in WEATHER_ICONS.items():
+            if keyword in weather_lower:
+                return icon
+        return "weather-overcast"  # Default icon
+
+    def fetch_and_notify(self, silent: bool = False):
+        """Fetch weather data and show notification"""
+        # always use cache first
+        cached_data = self.cache.get(self.location)
+        if cached_data:
+            self.display_weather(cached_data, from_cache=True, silent=silent)
+            return
+
         if not self.location:
             url = "https://wttr.in/?format=j1"
         else:
             url = f"https://wttr.in/{self.location}?format=j1"
+
         try:
-            r = requests.get(url, timeout=10)
-            data = r.json()
+            logger.info(f"Fetching weather from {url}")
+            response = requests.get(url, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+
+            self.cache.set(self.location, data)
+            self.display_weather(data, from_cache=False, silent=silent)
+
+        except requests.exceptions.Timeout:
+            error_msg = "Request timed out. Please check your internet connection."
+            logger.error(error_msg)
+            self.show_notification(f"Error: {error_msg}", "dialog-error")
+        except requests.exceptions.RequestException as e:
+            error_msg = f"Network error: {str(e)}"
+            logger.error(error_msg)
+            self.show_notification(f"Error: {error_msg}", "dialog-error")
+        except json.JSONDecodeError:
+            error_msg = "Invalid response from weather service"
+            logger.error(error_msg)
+            self.show_notification(f"Error: {error_msg}", "dialog-error")
+        except KeyError as e:
+            error_msg = f"Unexpected data format: {str(e)}"
+            logger.error(error_msg)
+            self.show_notification(f"Error: {error_msg}", "dialog-error")
+        except Exception as e:
+            error_msg = f"Unexpected error: {str(e)}"
+            logger.error(error_msg)
+            self.show_notification(f"Error: {error_msg}", "dialog-error")
+
+    def display_weather(
+        self, data: Dict[str, Any], from_cache: bool = False, silent: bool = False
+    ):
+        """Parse and display weather data"""
+        try:
             current = data["current_condition"][0]
-            location = data["nearest_area"][0]["areaName"][0]["value"]
+            location_info = data["nearest_area"][0]
+            location = location_info["areaName"][0]["value"]
+            country = location_info["country"][0]["value"]
             temp_c = current["temp_C"]
             temp_f = current["temp_F"]
+            feels_c = current["FeelsLikeC"]
+            feels_f = current["FeelsLikeF"]
             unit = "°F" if self.use_fahrenheit else "°C"
             temp = temp_f if self.use_fahrenheit else temp_c
+            feels = feels_f if self.use_fahrenheit else feels_c
             weather = current["weatherDesc"][0]["value"]
-            message = f"Weather in {location}: {weather}, Temp: {temp}{unit}"
-        except Exception as e:
-            if not self.location:
-                message = f"Error fetching weather: {e}"
-            else:
-                message = f"Error fetching weather for {self.location}: {e}"
+            humidity = current["humidity"]
+            wind_speed_kmph = current["windspeedKmph"]
+            wind_speed_mph = current["windspeedMiles"]
+            wind_speed = wind_speed_mph if self.use_fahrenheit else wind_speed_kmph
+            wind_unit = "mph" if self.use_fahrenheit else "km/h"
+            wind_dir = current["winddir16Point"]
+            uv_index = current.get("uvIndex", "N/A")
+            visibility_km = current.get("visibility", "N/A")
+            visibility_mi = current.get("visibilityMiles", "N/A")
+            visibility = visibility_mi if self.use_fahrenheit else visibility_km
+            visibility_unit = "mi" if self.use_fahrenheit else "km"
 
-        Notify.Notification.new(
-            "Panahone",
-            message,
-            "weather-overcast"
-        ).show()
+            message_lines = [
+                f"📍 {location}, {country}",
+                (
+                    f"🌡️  {temp}{unit} (feels like {feels}{unit})"
+                    if self.config.get("show_feels_like")
+                    else f"🌡️  {temp}{unit}"
+                ),
+                f"☁️  {weather}",
+            ]
+
+            if self.config.get("show_humidity", True):
+                message_lines.append(f"💧 Humidity: {humidity}%")
+
+            if self.config.get("show_wind", True):
+                message_lines.append(f"💨 Wind: {wind_speed} {wind_unit} {wind_dir}")
+
+            message_lines.extend(
+                [
+                    f"☀️  UV Index: {uv_index}",
+                    f"👁️  Visibility: {visibility} {visibility_unit}",
+                ]
+            )
+
+            if from_cache:
+                message_lines.append("\n(from cache)")
+
+            message = "\n".join(message_lines)
+
+            # systray icon update
+            icon_name = self.get_weather_icon(weather)
+            self.icon.set_from_icon_name(icon_name)
+
+            # tooltip update
+            tooltip = f"{location}: {weather}, {temp}{unit}"
+            self.icon.set_tooltip_text(tooltip)
+
+            # show notification (unless silent)
+            if not silent:
+                timeout = self.config.get("notification_timeout", 10000)
+                self.show_notification(message, icon_name, timeout=timeout)
+
+            logger.info(f"Weather displayed for {location}: {weather}, {temp}{unit}")
+
+        except (KeyError, IndexError) as e:
+            error_msg = f"Error parsing weather data: {str(e)}"
+            logger.error(error_msg)
+            self.show_notification(f"Error: {error_msg}", "dialog-error")
+
+    def show_notification(
+        self, message: str, icon: str = "weather-overcast", timeout: int = 10000
+    ):
+        """Display a desktop notification"""
+        try:
+            notification = Notify.Notification.new(APP_NAME, message, icon)
+            notification.set_timeout(timeout)
+            notification.show()
+        except Exception as e:
+            logger.error(f"Notification error: {e}")
 
     def quit(self, *args):
+        """Clean up and quit the application"""
+        logger.info(f"{APP_NAME} shutting down")
+        if self.auto_refresh_timer:
+            GLib.source_remove(self.auto_refresh_timer)
+        Notify.uninit()
         Gtk.main_quit()
 
     def run(self):
+        """Start the GTK main loop"""
         Gtk.main()
 
 
 def parse_args():
-    p = argparse.ArgumentParser(prog="panahone")
-    p.add_argument("-l", "--location", help="location for weather")
-    p.add_argument("-f", "--fahrenheit", action="store_true",
-                   help="use Fahrenheit instead of Celsius")
-    return p.parse_args()
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(
+        prog="panahone",
+        description=f"{APP_NAME} - A GTK3 weather applet using wttr.in API",
+        epilog="Left click: fetch weather | Middle click: quit | Right click: menu",
+    )
+    parser.add_argument(
+        "-l",
+        "--location",
+        help="Location for weather (city name, coordinates, etc.)",
+        metavar="LOCATION",
+    )
+    parser.add_argument(
+        "-f",
+        "--fahrenheit",
+        action="store_true",
+        help="Use Fahrenheit instead of Celsius",
+    )
+    parser.add_argument(
+        "-v", "--version", action="version", version=f"{APP_NAME} {APP_VERSION}"
+    )
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    return parser.parse_args()
 
 
 def main():
+    """Main entry point"""
     args = parse_args()
+
+    # loglevel
+    if args.debug:
+        logger.setLevel(logging.DEBUG)
+        logger.debug("Debug logging enabled")
+
     app = PanahoneApplet(args.location, args.fahrenheit)
+
     try:
         app.run()
     except KeyboardInterrupt:
         app.quit()
+    except Exception as e:
+        logger.critical(f"Fatal error: {e}", exc_info=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
