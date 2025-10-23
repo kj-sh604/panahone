@@ -140,4 +140,4 @@ cat ~/.cache/panahone/panahone.log
 
 # 📸
 
-![GIF animation of panahone ⛅](assets/demo.gif)
+![GIF animation of panahone ⛅](assets/demo0.gif)
