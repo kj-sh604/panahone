@@ -13,3 +13,10 @@ venv/
 *.atom/
 .DS_Store  # macOS
 Thumbs.db  # Windows
+
+# Panahone specific
+*.cache
+cache/
+config/
+weather_cache.json
+
