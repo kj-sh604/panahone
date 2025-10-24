@@ -1,6 +1,8 @@
 # panahone ⛅
 
-simple yet *somewhat* 🤷 feature-rich GTK3 system tray weather applet using [wttr.in](https://wttr.in/)'s API, written in Python.
+![GIF animation of panahone ⛅](assets/demo0.gif)
+
+simple gtk3 systray weather applet using [wttr.in](https://wttr.in/)'s API, written in Python.
 
 ## features
 
@@ -137,7 +139,3 @@ cat ~/.cache/panahone/panahone.log
 - added auto-refresh functionality with configurable intervals
 - enhanced weather display with humidity, wind, uv index, and visibility
 - added dynamic weather icons that change based on conditions
-
-# 📸
-
-![GIF animation of panahone ⛅](assets/demo0.gif)
