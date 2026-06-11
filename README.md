@@ -1,6 +1,8 @@
+![panahone logo](https://kj-media.online/pics/panahone/panahone.png)
+
 # panahone ⛅
 
-![GIF animation of panahone ⛅](assets/demo0.gif)
+![GIF animation of panahone ⛅](https://kj-media.online/pics/demo0/demo0.gif)
 
 simple gtk3 systray weather applet using [wttr.in](https://wttr.in/)'s API, written in Python.
 
